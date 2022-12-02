@@ -1,0 +1,17 @@
+[package]
+name = "bread-scan"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cargo-manifest = "0.4.0"
+clap = "4.0.29"
+reqwest = { version = "0.11.13", features = ["json"] }
+serde_json = "1.0.89"
+serde_yaml = "0.9.14"
+bread-common = { path = "submodules/bread-common" }
+serde = { version = "1.0.148", features = ["derive"] }
+tokio = { version = "1.22.0", features = ["rt", "macros"] }
+anyhow = "1.0.66"
