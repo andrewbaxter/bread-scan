@@ -5,6 +5,7 @@ edition = "2021"
 description = "Scan dependencies to generate a .bread.yml file"
 readme = "readme.md"
 repository = "https://github.com/andrewbaxter/bread-scan"
+license = "ISC"
 
 [dependencies]
 cargo-manifest = "0.4.0"
