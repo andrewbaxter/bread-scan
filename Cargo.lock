@@ -70,6 +70,8 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 [[package]]
 name = "bread-common"
 version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ac4d3322b3d63bdce1e930f27b056f746cb7e4299094921f7f12fd102b06316"
 dependencies = [
  "serde",
 ]
