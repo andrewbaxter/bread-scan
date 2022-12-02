@@ -1,6 +1,6 @@
 [package]
 name = "bread-scan"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Scan dependencies to generate a .bread.yml file"
 readme = "readme.md"
@@ -19,4 +19,4 @@ anyhow = "1.0.66"
 structre = "0.0.1"
 slog = "2.7.0"
 sloggers = "2.1.1"
-bread-common = "0.0.1"
+bread-common = "0.0.2"
