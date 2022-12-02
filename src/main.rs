@@ -1,33 +1,54 @@
-use anyhow::{Context as _AnyhowContext, Result};
+use anyhow::anyhow;
 use bread_common::projectconfig::{self, VersionedProjectConfig, FILENAME};
-use cargo_manifest::{Dependency, Manifest};
-use reqwest::{
-    header::{self, HeaderValue},
-    Client,
+use clap::Parser;
+use reqwest::header::{self, HeaderValue};
+use sloggers::{
+    terminal::{Destination, TerminalLoggerBuilder},
+    types::Severity,
+    Build,
 };
-use serde::Deserialize;
-use std::{
-    fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-    process::exit,
-    str::FromStr,
-};
+use std::{env::current_dir, fs, path::PathBuf, process::exit};
 
-pub mod flowcommon;
+use crate::{common::Context, golang::process_golang_gomod, rust::process_rust_cargo};
 
-const DEFAULT_WEIGHT: u32 = 100;
+pub mod common;
+pub mod flowextra;
+pub mod golang;
+pub mod rust;
+pub mod slogextra;
 
-struct Context {
-    out: projectconfig::latest::Config,
-    hc: Client,
+#[derive(Parser, Debug)]
+pub struct Args {
+    #[arg(help = "Paths to scan for dependency files. If not specified, uses current directory.")]
+    paths: Vec<PathBuf>,
+    #[arg(short, long, help = "Write output to .bread.yml instead of stdout")]
+    write: bool,
+    #[arg(
+        short,
+        long,
+        help = "Overwrite existing .bread.yml if it already exists"
+    )]
+    force: bool,
 }
-
-impl Context {}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let mut builder = TerminalLoggerBuilder::new();
+    builder.level(Severity::Debug);
+    builder.destination(Destination::Stderr);
+    let log = builder.build().unwrap();
+
     match aes!({
+        let args = Args::parse();
+        let cwd = current_dir()?.canonicalize()?;
+        let mut paths = vec![];
+        for p in args.paths {
+            paths.push(p.canonicalize()?);
+        }
+        if paths.is_empty() {
+            paths.push(cwd.clone());
+        }
+
         let mut ctx = Context {
             out: projectconfig::latest::Config {
                 disabled: false,
@@ -46,111 +67,48 @@ async fn main() {
                 .build()?,
         };
 
-        fn process_bread(ctx: &mut Context, path: &Path) -> Result<()> {
-            let config: VersionedProjectConfig =
-                serde_yaml::from_slice(&match fs::read(path.join(FILENAME)) {
-                    Err(e) if e.kind() == ErrorKind::NotFound => {
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                    Ok(b) => b,
-                })?;
-            match config {
-                VersionedProjectConfig::V1(config) => {
-                    ctx.out.weights.accounts.extend(config.weights.accounts);
-                    ctx.out.weights.projects.extend(config.weights.projects);
-                }
-            };
-            Ok(())
+        for path in paths {
+            let log = log.new(o!(dir = path.to_string_lossy().to_string()));
+            process_rust_cargo(&log, &mut ctx, &path).await;
+            process_golang_gomod(&log, &mut ctx, &path).await;
         }
 
-        async fn process_cargo_dep(ctx: &mut Context, id: String, dep: &Dependency) -> Result<()> {
-            aes!({
-                let id = match dep {
-                    Dependency::Simple(_) => id.clone(),
-                    Dependency::Detailed(d) => {
-                        let mut id = id.clone();
-                        if let Some(git) = &d.git {
-                            ctx.out
-                                .weights
-                                .projects
-                                .insert(git.to_string(), DEFAULT_WEIGHT);
-                            return Ok(());
-                        }
-                        if let Some(path) = &d.path {
-                            process_bread(ctx, &PathBuf::from_str(&path)?)?;
-                            return Ok(());
-                        }
-                        if let Some(pkg) = &d.package {
-                            id = pkg.to_string();
-                        }
-                        id
-                    }
-                };
-                #[derive(Deserialize)]
-                struct CratesRespCrate {
-                    repository: Option<String>,
-                }
-                #[derive(Deserialize)]
-                struct CratesResp {
-                    #[serde(rename = "crate")]
-                    crate_: CratesRespCrate,
-                }
-                let resp: CratesResp = ctx
-                    .hc
-                    .get(format!("https://crates.io/api/v1/crates/{}", id))
-                    .send()
-                    .await?
-                    .json()
-                    .await?;
-                if let Some(repo) = resp.crate_.repository {
-                    ctx.out.weights.projects.insert(repo, DEFAULT_WEIGHT);
-                }
-                Ok(())
-            })
-            .await
-            .with_context(|| format!("Error processing Cargo dep {}", id))
-        }
-        match Manifest::from_path("Cargo.toml") {
-            Ok(m) => {
-                for d in m.dependencies.unwrap_or_default() {
-                    process_cargo_dep(&mut ctx, d.0, &d.1).await?;
-                }
-                for d in m.build_dependencies.unwrap_or_default() {
-                    process_cargo_dep(&mut ctx, d.0, &d.1).await?;
-                }
-                for d in m.dev_dependencies.unwrap_or_default() {
-                    process_cargo_dep(&mut ctx, d.0, &d.1).await?;
-                }
-                if let Some(t) = m.target {
-                    for deps in t.into_values() {
-                        for d in deps.dependencies {
-                            process_cargo_dep(&mut ctx, d.0, &d.1).await?;
-                        }
-                        for d in deps.build_dependencies {
-                            process_cargo_dep(&mut ctx, d.0, &d.1).await?;
-                        }
-                        for d in deps.dev_dependencies {
-                            process_cargo_dep(&mut ctx, d.0, &d.1).await?;
-                        }
-                    }
-                }
+        let text = serde_yaml::to_string(&VersionedProjectConfig::V1(ctx.out))?;
+        if args.write {
+            let dest = cwd.join(FILENAME);
+            if dest.exists() && !args.force {
+                return Err(anyhow!(
+                    "File already exists at {}. If you wish to overwrite it, specify --force",
+                    dest.to_string_lossy(),
+                ));
             }
-            Err(cargo_manifest::Error::Io(e)) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => Err(e)?,
-        };
-
-        fs::write(FILENAME, serde_yaml::to_string(&ctx.out)?.as_bytes())?;
-
-        Ok(())
+            fs::write(&dest, text.as_bytes())?;
+            info!(
+                log,
+                "Wrote new manifest",
+                out = dest.to_string_lossy().to_string()
+            );
+            Ok(None)
+        } else {
+            Ok(Some(text))
+        }
     })
     .await
     {
-        Ok(_) => {}
+        Ok(Some(text)) => {
+            drop(log);
+            println!("{}", text);
+        }
+        Ok(None) => {
+            drop(log);
+        }
         Err(e) => {
-            eprintln!("Fatal error scanning dependencies: {}", e);
+            err!(
+                log,
+                "Fatal error encountered while scanning dependencies",
+                err = format!("{:?}", e)
+            );
+            drop(log);
             exit(1);
         }
     }

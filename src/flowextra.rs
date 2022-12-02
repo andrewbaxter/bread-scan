@@ -9,6 +9,16 @@ pub async fn async_err_stop<R, T: Future<Output = Result<R>>, F: FnOnce() -> T>(
 #[macro_export]
 macro_rules! aes {
     ($b:expr) => {
-        $crate::flowcommon::async_err_stop(|| async { $b })
+        $crate::flowextra::async_err_stop(|| async { $b })
+    };
+}
+
+#[macro_export]
+macro_rules! bb {
+    ($e:expr) => {
+        loop {
+            $e;
+            break;
+        }
     };
 }
