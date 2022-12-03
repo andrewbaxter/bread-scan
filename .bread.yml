@@ -1,16 +1,17 @@
 !v1
 weights:
   accounts:
-    0: 100
+    1: 100
   projects:
-    https://github.com/andrewbaxter/structre: 100
     https://github.com/LukeMathWalker/cargo-manifest: 100
-    https://github.com/seanmonstar/reqwest: 100
-    https://github.com/dtolnay/serde-yaml: 100
-    https://github.com/slog-rs/slog: 100
-    https://github.com/serde-rs/serde: 100
-    https://github.com/tokio-rs/tokio: 100
-    https://github.com/sile/sloggers: 100
-    https://github.com/serde-rs/json: 100
+    https://github.com/andrewbaxter/bread-common: 100
+    https://github.com/andrewbaxter/structre: 100
     https://github.com/clap-rs/clap: 100
     https://github.com/dtolnay/anyhow: 100
+    https://github.com/dtolnay/serde-yaml: 100
+    https://github.com/seanmonstar/reqwest: 100
+    https://github.com/serde-rs/json: 100
+    https://github.com/serde-rs/serde: 100
+    https://github.com/sile/sloggers: 100
+    https://github.com/slog-rs/slog: 100
+    https://github.com/tokio-rs/tokio: 100
