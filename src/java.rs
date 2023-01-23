@@ -5,6 +5,7 @@ use anyhow::{
     Result,
     Context as _,
 };
+use reqwest::StatusCode;
 use slog::Logger;
 use tokio::{
     spawn,
@@ -65,7 +66,11 @@ fn process_dep(
                 Ok(xpath.evaluate(&xctx, pom.as_document().root()).unwrap().string())
             }
 
-            let body = ctx.get(&url).await?.send().await?.bytes().await?.to_vec();
+            let resp = ctx.get(&url).await?.send().await?;
+            if resp.status() == StatusCode::NOT_FOUND {
+                return Ok(());
+            }
+            let body = resp.bytes().await?.to_vec();
             let repo =
                 work_around_rust_lifetime_bugs(
                     &body,
