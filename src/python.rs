@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     path::Path,
 };
-use anyhow::anyhow;
+use reqwest::header::{
+    self,
+    HeaderValue,
+};
 use serde::Deserialize;
 use slog::Logger;
 use tokio::{
@@ -14,10 +17,11 @@ use crate::{
     o,
     common::{
         Context,
-        DEFAULT_WEIGHT,
         maybe_read,
+        norm_repo,
     },
     aes,
+    bbl,
 };
 
 fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep: String) {
@@ -39,38 +43,23 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep:
                 pub project_urls: HashMap<String, String>,
             }
 
-            let resp: Project = ctx.hc.get(format!("https://pypi.org/pypi/{}/json", dep)).send().await?.json().await?;
-
-            // 1
-            'search : loop {
+            let resp: Project =
+                ctx
+                    .get(&format!("https://pypi.org/pypi/{}/json", dep))
+                    .await?
+                    .header(header::ACCEPT, HeaderValue::from_static("application/json"))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+            bbl!('search, {
                 async fn grab_repo(log: &Logger, ctx: &Context, raw_url: &str) -> bool {
                     match aes!({
-                        let url = url::Url::parse(raw_url)?;
-                        let host = url.host_str().ok_or(anyhow!("Missing host portion of url"))?.to_string();
-                        let mut path: Vec<String> = url.path().split('/').map(|s| s.to_string()).collect();
-                        let mut matched = false;
-                        if host.starts_with("github.com") {
-                            path.truncate(3);
-                            matched = true;
-                        }
-                        if host.starts_with("gitlab.com") {
-                            path.truncate(3);
-                            matched = true;
-                        }
-                        if host.starts_with("sr.ht") {
-                            path.truncate(3);
-                            matched = true;
-                        }
-                        if !matched {
-                            return Ok(false);
-                        }
-                        ctx
-                            .config
-                            .lock()
-                            .unwrap()
-                            .weights
-                            .projects
-                            .insert(format!("https://{}{}", host, path.join("/")), DEFAULT_WEIGHT);
+                        let url = match norm_repo(raw_url)? {
+                            Some(u) => u,
+                            None => return Ok(false),
+                        };
+                        ctx.add_url_canonicalize(log, &url).await;
                         Ok(true)
                     }).await {
                         Err(e) => {
@@ -94,8 +83,7 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep:
                     }
                 }
                 warn!(log, "No repo-ish url found in dep metadata");
-                break 'search;
-            };
+            });
             Ok(())
         }).await {
             Ok(_) => { },

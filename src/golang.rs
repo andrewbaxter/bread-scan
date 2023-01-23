@@ -14,7 +14,7 @@ use crate::{
     warn,
 };
 
-pub fn process_golang_gomod(log: &Logger, ctx: &mut Context, path: &Path) {
+pub fn process_golang_gomod(log: &Logger, ctx: &Context, path: &Path) {
     let path = path.join("go.mod");
     let log = log.new(o!(file = path.to_string_lossy().to_string()));
 

@@ -36,3 +36,13 @@ macro_rules! bb{
         }
     };
 }
+
+#[macro_export]
+macro_rules! bbl{
+    ($l: lifetime, $e: expr) => {
+        $l: loop {
+            $e;
+            break;
+        }
+    };
+}

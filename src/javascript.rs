@@ -5,6 +5,10 @@ use anyhow::{
     Context as _,
     anyhow,
 };
+use tokio::{
+    task::JoinHandle,
+    spawn,
+};
 use std::{
     path::Path,
     collections::HashMap,
@@ -12,12 +16,11 @@ use std::{
 use crate::{
     common::{
         Context,
-        DEFAULT_WEIGHT,
         maybe_read,
     },
     o,
     warn,
-    es,
+    aes,
 };
 
 #[derive(Deserialize)]
@@ -41,39 +44,36 @@ fn try_load_packagejson(path: &Path) -> Result<Option<Package>> {
     })?))
 }
 
-fn process_npm_dep(log: &Logger, ctx: &mut Context, root_path: &Path, dep: &str) {
+fn process_npm_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, root_path: &Path, dep: &str) {
     let log = log.new(o!(dep = dep.to_string()));
-    match es!({
-        let dep_path = root_path.join("node_modules").join(dep).join("package.json");
-        let package = match try_load_packagejson(&dep_path).context("Error loading package.json")? {
-            None => {
-                return Err(anyhow!("NPM package missing in node_modules"));
+    let ctx = ctx.clone();
+    let dep_path = root_path.join("node_modules").join(dep).join("package.json");
+    pool.push(spawn(async move {
+        match aes!({
+            let package = match try_load_packagejson(&dep_path).context("Error loading package.json")? {
+                None => {
+                    return Err(anyhow!("NPM package missing in node_modules"));
+                },
+                Some(p) => p,
+            };
+            let repo = match package.repository {
+                None => return Ok(()),
+                Some(r) => r,
+            };
+            let url = url::Url::parse(&repo.url).context("Unparsable repo url")?;
+            let path = url.path().rsplitn(2, ".git").collect::<Vec<&str>>().last().unwrap().to_string();
+            ctx.add_url_canonicalize(&log, &format!("https://{}{}", url.host_str().unwrap_or(""), path)).await;
+            Ok(())
+        }).await {
+            Ok(_) => { },
+            Err(e) => {
+                warn!(log, "Error processing dependency", err = format!("{:?}", e));
             },
-            Some(p) => p,
-        };
-        let repo = match package.repository {
-            None => return Ok(()),
-            Some(r) => r,
-        };
-        let url = url::Url::parse(&repo.url).context("Unparsable repo url")?;
-        let path = url.path().rsplitn(2, ".git").collect::<Vec<&str>>().last().unwrap().to_string();
-        ctx
-            .config
-            .lock()
-            .unwrap()
-            .weights
-            .projects
-            .insert(format!("https://{}{}", url.host_str().unwrap_or(""), path), DEFAULT_WEIGHT);
-        Ok(())
-    }) {
-        Err(e) => {
-            warn!(log, "Error processing dep", err = e.to_string());
-        },
-        Ok(_) => { },
-    }
+        }
+    }));
 }
 
-pub fn process_javascript_npm(log: &Logger, ctx: &mut Context, path: &Path) {
+pub fn process_javascript_npm(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, path: &Path) {
     let package_path = path.join("package.json");
     let log = log.new(o!(file = package_path.to_string_lossy().to_string()));
     let package = match try_load_packagejson(&package_path) {
@@ -85,9 +85,9 @@ pub fn process_javascript_npm(log: &Logger, ctx: &mut Context, path: &Path) {
         Ok(Some(p)) => p,
     };
     for dep in package.dependencies.iter().map(|m| m.keys()).flatten() {
-        process_npm_dep(&log, ctx, path, dep);
+        process_npm_dep(&log, ctx, pool, path, dep);
     }
     for dep in package.dev_dependencies.iter().map(|m| m.keys()).flatten() {
-        process_npm_dep(&log, ctx, path, dep);
+        process_npm_dep(&log, ctx, pool, path, dep);
     }
 }

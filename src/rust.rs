@@ -2,6 +2,10 @@ use cargo_manifest::{
     Dependency,
     Manifest,
 };
+use reqwest::header::{
+    self,
+    HeaderValue,
+};
 use serde::Deserialize;
 use slog::Logger;
 use tokio::{
@@ -27,7 +31,7 @@ use crate::{
     warn,
 };
 
-fn process_cargo_dep(log: &Logger, ctx: &mut Context, pool: &mut Vec<JoinHandle<()>>, id: String, dep: &Dependency) {
+fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: String, dep: &Dependency) {
     let log = log.new(o!(dependency = id.clone()));
     let ctx = ctx.clone();
     let dep = dep.clone();
@@ -64,9 +68,16 @@ fn process_cargo_dep(log: &Logger, ctx: &mut Context, pool: &mut Vec<JoinHandle<
             }
 
             let resp: CratesResp =
-                ctx.hc.get(format!("https://crates.io/api/v1/crates/{}", id)).send().await?.json().await?;
+                ctx
+                    .get(&format!("https://crates.io/api/v1/crates/{}", id))
+                    .await?
+                    .header(header::ACCEPT, HeaderValue::from_static("application/json"))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
             if let Some(repo) = resp.crate_.repository {
-                ctx.config.lock().unwrap().weights.projects.insert(repo, DEFAULT_WEIGHT);
+                ctx.add_url_canonicalize(&log, &repo).await;
             }
             Ok(())
         }).await {
@@ -78,37 +89,42 @@ fn process_cargo_dep(log: &Logger, ctx: &mut Context, pool: &mut Vec<JoinHandle<
     }));
 }
 
-pub fn process_rust_cargo(log: &Logger, ctx: &mut Context, pool: &mut Vec<JoinHandle<()>>, path: &Path) {
-    let path = path.join("Cargo.toml");
-    let log = log.new(o!(file = path.to_string_lossy().to_string()));
-    match Manifest::from_path(&path) {
-        Ok(m) => {
-            for d in m.dependencies.unwrap_or_default() {
-                process_cargo_dep(&log, &mut *ctx, pool, d.0, &d.1);
-            }
-            for d in m.build_dependencies.unwrap_or_default() {
-                process_cargo_dep(&log, &mut *ctx, pool, d.0, &d.1);
-            }
-            for d in m.dev_dependencies.unwrap_or_default() {
-                process_cargo_dep(&log, &mut *ctx, pool, d.0, &d.1);
-            }
-            if let Some(t) = m.target {
-                for deps in t.into_values() {
-                    for d in deps.dependencies {
-                        process_cargo_dep(&log, &mut *ctx, pool, d.0, &d.1);
-                    }
-                    for d in deps.build_dependencies {
-                        process_cargo_dep(&log, &mut *ctx, pool, d.0, &d.1);
-                    }
-                    for d in deps.dev_dependencies {
-                        process_cargo_dep(&log, &mut *ctx, pool, d.0, &d.1);
-                    }
-                }
-            }
+pub fn process_rust_cargo(base_log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, base_path: &Path) {
+    let path = base_path.join("Cargo.toml");
+    let log = base_log.new(o!(file = path.to_string_lossy().to_string()));
+    let m = match Manifest::from_path(&path) {
+        Ok(m) => m,
+        Err(cargo_manifest::Error::Io(e)) if e.kind() == ErrorKind::NotFound => {
+            return;
         },
-        Err(cargo_manifest::Error::Io(e)) if e.kind() == ErrorKind::NotFound => { },
         Err(e) => {
-            warn!(log, "Error loading manifest", err = format!("{:?}", e));
+            warn!(log, "Error loading manifest", err = e.to_string());
+            return;
         },
     };
+    for d in m.dependencies.unwrap_or_default() {
+        process_dep(&log, ctx, pool, d.0, &d.1);
+    }
+    for d in m.build_dependencies.unwrap_or_default() {
+        process_dep(&log, ctx, pool, d.0, &d.1);
+    }
+    for d in m.dev_dependencies.unwrap_or_default() {
+        process_dep(&log, ctx, pool, d.0, &d.1);
+    }
+    if let Some(t) = m.target {
+        for deps in t.into_values() {
+            for d in deps.dependencies {
+                process_dep(&log, ctx, pool, d.0, &d.1);
+            }
+            for d in deps.build_dependencies {
+                process_dep(&log, ctx, pool, d.0, &d.1);
+            }
+            for d in deps.dev_dependencies {
+                process_dep(&log, ctx, pool, d.0, &d.1);
+            }
+        }
+    }
+    for member in m.workspace.iter().map(|w| &w.members).flatten() {
+        process_rust_cargo(&base_log, ctx, pool, &base_path.join(member));
+    }
 }
