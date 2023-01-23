@@ -12,6 +12,7 @@ use bread_common::projectconfig::{
     VersionedProjectConfig,
     FILENAME,
 };
+use anyhow::Result;
 use reqwest::Client;
 use crate::aes;
 
@@ -25,14 +26,14 @@ pub struct Context {
 
 pub async fn process_bread(ctx: &Context, path: &Path) {
     match aes!({
-        let config: VersionedProjectConfig = serde_yaml::from_slice(&match fs::read(path.join(FILENAME)) {
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Ok(());
-            },
+        let config: VersionedProjectConfig = serde_yaml::from_slice(&match maybe_read(&path.join(FILENAME)) {
             Err(e) => {
                 return Err(e.into());
             },
-            Ok(b) => b,
+            Ok(None) => {
+                return Ok(());
+            },
+            Ok(Some(b)) => b,
         })?;
         match config {
             VersionedProjectConfig::V1(config) => {
@@ -47,5 +48,19 @@ pub async fn process_bread(ctx: &Context, path: &Path) {
         Err(e) => {
             eprintln!("Error processing submodule at [[{}]]: {}", path.to_string_lossy(), e);
         },
+    }
+}
+
+pub fn maybe_read(p: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(&p) {
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound || e.raw_os_error().unwrap_or_default() == 20 {
+                // 20 is NotADirectory, enum only on unstable (nop)
+                return Ok(None);
+            } else {
+                return Err(e.into());
+            }
+        },
+        Ok(r) => return Ok(Some(r)),
     }
 }

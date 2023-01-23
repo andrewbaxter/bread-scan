@@ -6,8 +6,6 @@ use anyhow::{
     anyhow,
 };
 use std::{
-    fs,
-    io::ErrorKind,
     path::Path,
     collections::HashMap,
 };
@@ -15,6 +13,7 @@ use crate::{
     common::{
         Context,
         DEFAULT_WEIGHT,
+        maybe_read,
     },
     o,
     warn,
@@ -35,16 +34,10 @@ struct Package {
 }
 
 fn try_load_packagejson(path: &Path) -> Result<Option<Package>> {
-    Ok(Some(serde_json::from_slice::<Package>(&match fs::read(&path) {
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound || e.raw_os_error().unwrap_or_default() == 20 {
-                // 20 is NotADirectory, enum only on unstable (nop)
-                return Ok(None);
-            } else {
-                return Err(e.into());
-            }
-        },
-        Ok(r) => r,
+    Ok(Some(serde_json::from_slice::<Package>(&match maybe_read(&path) {
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(e.into()),
+        Ok(Some(r)) => r,
     })?))
 }
 

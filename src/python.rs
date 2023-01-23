@@ -1,7 +1,5 @@
 use std::{
-    io::ErrorKind,
     collections::HashMap,
-    fs,
     path::Path,
 };
 use anyhow::anyhow;
@@ -17,6 +15,7 @@ use crate::{
     common::{
         Context,
         DEFAULT_WEIGHT,
+        maybe_read,
     },
     aes,
 };
@@ -129,16 +128,15 @@ pub fn process_python_pyproject(log: &Logger, ctx: &Context, pool: &mut Vec<Join
         tool: Option<Tool>,
     }
 
-    let proj = match toml::from_slice::<PyProject>(&match fs::read(&project_path) {
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound || e.raw_os_error().unwrap_or_default() == 20 {
-                // 20 is NotADirectory, enum only on unstable (nop)
-            } else {
-                warn!(log, "Error loading dep file", err = e.to_string());
-            }
+    let proj = match toml::from_slice::<PyProject>(&match maybe_read(&project_path) {
+        Ok(None) => {
             return;
         },
-        Ok(r) => r,
+        Err(e) => {
+            warn!(log, "Error loading dep file", err = e.to_string());
+            return;
+        },
+        Ok(Some(r)) => r,
     }) {
         Err(e) => {
             warn!(log, "Error loading dep file", err = e.to_string());

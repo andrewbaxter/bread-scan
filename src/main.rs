@@ -1,10 +1,10 @@
-use anyhow::anyhow;
 use bread_common::projectconfig::{
     self,
     VersionedProjectConfig,
     FILENAME,
 };
 use clap::Parser;
+use common::maybe_read;
 use javascript::process_javascript_npm;
 use python::process_python_pyproject;
 use reqwest::header::{
@@ -47,10 +47,6 @@ pub mod slogextra;
 pub struct Args {
     #[arg(help = "Paths to scan for dependency files. If not specified, uses current directory.")]
     paths: Vec<PathBuf>,
-    #[arg(short, long, help = "Write output to .bread.yml instead of stdout")]
-    write: bool,
-    #[arg(short, long, help = "Overwrite existing .bread.yml if it already exists")]
-    force: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -69,6 +65,7 @@ async fn main() {
         if paths.is_empty() {
             paths.push(cwd.clone());
         }
+        let manifest_path = cwd.join(FILENAME);
         let mut ctx = Context {
             hc: reqwest::Client::builder()
                 .user_agent("https://github.com/andrewbaxter/bread-scan")
@@ -76,13 +73,18 @@ async fn main() {
                     [(header::ACCEPT, HeaderValue::from_static("application/json"))].into_iter().collect(),
                 )
                 .build()?,
-            config: Arc::new(Mutex::new(projectconfig::latest::Config {
+            config: Arc::new(Mutex::new(maybe_read(&manifest_path).and_then(|r| match r {
+                Some(b) => Ok(Some(match serde_yaml::from_slice::<VersionedProjectConfig>(&b)? {
+                    VersionedProjectConfig::V1(v) => v,
+                })),
+                None => Ok(None),
+            })?.unwrap_or_else(|| projectconfig::latest::Config {
                 disabled: false,
                 weights: projectconfig::v1::Weights {
                     accounts: Default::default(),
                     projects: Default::default(),
                 },
-            })),
+            }))),
         };
         let mut pool = vec![];
         for path in paths {
@@ -95,29 +97,13 @@ async fn main() {
         for f in pool {
             f.await.unwrap();
         }
-        let text = serde_yaml::to_string(&VersionedProjectConfig::V1(ctx.config.lock().unwrap().to_owned()))?;
-        if args.write {
-            let dest = cwd.join(FILENAME);
-            if dest.exists() && !args.force {
-                return Err(
-                    anyhow!(
-                        "File already exists at {}. If you wish to overwrite it, specify --force",
-                        dest.to_string_lossy()
-                    ),
-                );
-            }
-            fs::write(&dest, text.as_bytes())?;
-            info!(log, "Wrote new manifest", out = dest.to_string_lossy().to_string());
-            Ok(None)
-        } else {
-            Ok(Some(text))
-        }
+        fs::write(
+            &manifest_path,
+            serde_yaml::to_string(&VersionedProjectConfig::V1(ctx.config.lock().unwrap().to_owned()))?.as_bytes(),
+        )?;
+        Ok(())
     }).await {
-        Ok(Some(text)) => {
-            drop(log);
-            println!("{}", text);
-        },
-        Ok(None) => {
+        Ok(_) => {
             drop(log);
         },
         Err(e) => {

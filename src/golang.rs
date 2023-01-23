@@ -1,7 +1,5 @@
 use slog::Logger;
 use std::{
-    fs,
-    io::ErrorKind,
     path::Path,
 };
 use structre::structre;
@@ -10,6 +8,7 @@ use crate::{
     common::{
         Context,
         DEFAULT_WEIGHT,
+        maybe_read,
     },
     o,
     warn,
@@ -36,16 +35,13 @@ pub fn process_golang_gomod(log: &Logger, ctx: &mut Context, path: &Path) {
     let parse_require = RequireFromRegex::new();
     let mut parens = 0;
     let mut in_require = false;
-    let bytes = match fs::read(&path) {
-        Err(e) if e.kind() == ErrorKind::NotFound || e.raw_os_error().unwrap_or_default() == 20 => {
-            // 20 is NotADirectory, enum only on unstable
-            return;
-        },
+    let bytes = match maybe_read(&path) {
+        Ok(None) => return,
         Err(e) => {
             warn!(log, "Error loading go.mod", err = format!("{:?}", e));
             return;
         },
-        Ok(b) => b,
+        Ok(Some(b)) => b,
     };
     let lines = String::from_utf8_lossy(&bytes);
     let mut config = ctx.config.lock().unwrap();
