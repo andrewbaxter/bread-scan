@@ -6,7 +6,11 @@ use anyhow::{
     Context as _,
 };
 use reqwest::StatusCode;
-use slog::Logger;
+use slog::{
+    Logger,
+    warn,
+    o,
+};
 use tokio::{
     spawn,
     task::JoinHandle,
@@ -15,10 +19,7 @@ use crate::{
     common::{
         maybe_read,
         Context,
-        norm_repo,
     },
-    warn,
-    o,
     aes,
 };
 
@@ -47,7 +48,8 @@ fn process_dep(
     dep_name: String,
     dep_ver: String,
 ) {
-    let log = log.new(o!(dep_group = dep_group.clone(), dep_name = dep_name.clone(), dep_ver = dep_ver.clone()));
+    let log =
+        log.new(o!("dep_group" => dep_group.clone(), "dep_name" => dep_name.clone(), "dep_ver" => dep_ver.clone()));
     let ctx = ctx.clone();
     pool.push(spawn(async move {
         match aes!({
@@ -58,6 +60,13 @@ fn process_dep(
                     name = dep_name,
                     ver = dep_ver
                 );
+            let cache_key = format!("java-{}", url);
+            if let Some(repo) = ctx.cache_get(&log, &cache_key).await {
+                if !ctx.maybe_add_url(&log, &repo).await {
+                    ctx.add_url_canonicalize(&log, &repo).await;
+                }
+                return Ok(());
+            }
 
             fn work_around_rust_lifetime_bugs(resp_bytes: &[u8]) -> Result<String> {
                 let xpath =
@@ -82,13 +91,20 @@ fn process_dep(
                     ),
                 )?;
             if !repo.is_empty() {
-                ctx.add_url_canonicalize(&log, &norm_repo(&repo)?.unwrap_or(repo)).await;
+                ctx.cache_put(&log, &cache_key, &repo).await;
+                if !ctx.maybe_add_url(&log, &repo).await {
+                    ctx.add_url_canonicalize(&log, &repo).await;
+                }
             }
             Ok(())
         }).await {
             Ok(_) => { },
             Err(e) => {
-                warn!(log, "Error processing dependency", err = format!("{:?}", e));
+                warn!(
+                    log,
+                    "Error processing dependency";
+                    "err" => #? e
+                );
             },
         }
     }));
@@ -96,12 +112,16 @@ fn process_dep(
 
 pub fn process_java_pom(base_log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, base_path: &Path) {
     let path = base_path.join("pom.xml");
-    let log = base_log.new(o!(file = path.to_string_lossy().to_string()));
+    let log = base_log.new(o!("file" => path.to_string_lossy().to_string()));
     let (pom, xctx) = match try_load_pom(&path) {
         Ok(None) => return,
         Ok(Some(p)) => p,
         Err(e) => {
-            warn!(log, "Error loading manifest", err = e.to_string());
+            warn!(
+                log,
+                "Error loading manifest";
+                "err" => #? e
+            );
             return;
         },
     };

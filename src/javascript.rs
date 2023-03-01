@@ -1,5 +1,9 @@
 use serde::Deserialize;
-use slog::Logger;
+use slog::{
+    Logger,
+    o,
+    warn,
+};
 use anyhow::{
     Result,
     Context as _,
@@ -18,8 +22,6 @@ use crate::{
         Context,
         maybe_read,
     },
-    o,
-    warn,
     aes,
 };
 
@@ -45,7 +47,7 @@ fn try_load_packagejson(path: &Path) -> Result<Option<Package>> {
 }
 
 fn process_npm_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, root_path: &Path, dep: &str) {
-    let log = log.new(o!(dep = dep.to_string()));
+    let log = log.new(o!("dep" => dep.to_string()));
     let ctx = ctx.clone();
     let dep_path = root_path.join("node_modules").join(dep).join("package.json");
     pool.push(spawn(async move {
@@ -67,7 +69,11 @@ fn process_npm_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, 
         }).await {
             Ok(_) => { },
             Err(e) => {
-                warn!(log, "Error processing dependency", err = format!("{:?}", e));
+                warn!(
+                    log,
+                    "Error processing dependency";
+                    "err" => #? e
+                );
             },
         }
     }));
@@ -75,10 +81,14 @@ fn process_npm_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, 
 
 pub fn process_javascript_npm(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, path: &Path) {
     let package_path = path.join("package.json");
-    let log = log.new(o!(file = package_path.to_string_lossy().to_string()));
+    let log = log.new(o!("file" => package_path.to_string_lossy().to_string()));
     let package = match try_load_packagejson(&package_path) {
         Err(e) => {
-            warn!(log, "Error reading package.json", err = e.to_string());
+            warn!(
+                log,
+                "Error reading package.json";
+                "err" => #? e
+            );
             return;
         },
         Ok(None) => return,

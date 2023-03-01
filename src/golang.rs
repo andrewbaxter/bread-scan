@@ -1,4 +1,8 @@
-use slog::Logger;
+use slog::{
+    Logger,
+    o,
+    warn,
+};
 use std::{
     path::Path,
 };
@@ -7,16 +11,13 @@ use crate::{
     bb,
     common::{
         Context,
-        DEFAULT_WEIGHT,
         maybe_read,
     },
-    o,
-    warn,
 };
 
 pub fn process_golang_gomod(log: &Logger, ctx: &Context, path: &Path) {
     let path = path.join("go.mod");
-    let log = log.new(o!(file = path.to_string_lossy().to_string()));
+    let log = log.new(o!("file" => path.to_string_lossy().to_string()));
 
     #[structre(r#"^\s*(?P<keyword>[^\s]+)\s+(?P<remainder>.*)\s*$"#)]
     struct Keyword {
@@ -38,7 +39,11 @@ pub fn process_golang_gomod(log: &Logger, ctx: &Context, path: &Path) {
     let bytes = match maybe_read(&path) {
         Ok(None) => return,
         Err(e) => {
-            warn!(log, "Error loading go.mod", err = format!("{:?}", e));
+            warn!(
+                log,
+                "Error loading go.mod";
+                "err" => #? e
+            );
             return;
         },
         Ok(Some(b)) => b,
@@ -63,11 +68,16 @@ pub fn process_golang_gomod(log: &Logger, ctx: &Context, path: &Path) {
                                 require
                             },
                             Err(e) => {
-                                warn!(log, "Error parsing require line", line = line, err = format!("{:?}", e));
+                                warn!(
+                                    log,
+                                    "Error parsing require line";
+                                    "line" => line,
+                                    "err" => #? e
+                                );
                                 break;
                             },
                         };
-                        config.weights.projects.insert(format!("https://{}", require.id), DEFAULT_WEIGHT);
+                        config.projects.insert(format!("https://{}", require.id), None);
                     });
                 }
             }
@@ -87,11 +97,16 @@ pub fn process_golang_gomod(log: &Logger, ctx: &Context, path: &Path) {
                             require
                         },
                         Err(e) => {
-                            warn!(log, "Error parsing require line", line = line, err = format!("{:?}", e));
+                            warn!(
+                                log,
+                                "Error parsing require line";
+                                "line" => line,
+                                "err" => #? e
+                            );
                             break;
                         },
                     };
-                    config.weights.projects.insert(format!("https://{}", require.id), DEFAULT_WEIGHT);
+                    config.projects.insert(format!("https://{}", require.id), None);
                 });
             }
         }

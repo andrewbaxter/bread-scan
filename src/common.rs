@@ -1,7 +1,10 @@
 use std::{
     fs,
     io::ErrorKind,
-    path::Path,
+    path::{
+        Path,
+        PathBuf,
+    },
     sync::{
         Arc,
         Mutex,
@@ -10,14 +13,13 @@ use std::{
     num::NonZeroU32,
     collections::HashMap,
 };
-use bread_common::projectconfig::{
-    self,
-    VersionedProjectConfig,
-    FILENAME,
+use bread_common::{
+    AccountId,
 };
 use anyhow::{
     anyhow,
     Result,
+    Context as _,
 };
 use governor::{
     RateLimiter,
@@ -37,36 +39,82 @@ use reqwest::{
         self,
         HeaderValue,
     },
+    Url,
 };
-use slog::Logger;
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use slog::{
+    Logger,
+    trace,
+    warn,
+};
 use crate::{
     aes,
-    trace,
 };
 
 pub const DEFAULT_WEIGHT: u32 = 100;
+pub const USER_AGENT: &'static str = "https://github.com/andrewbaxter/bread-scan";
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct WorkingAccount {
+    pub memo: String,
+    pub weight: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct WorkingWeights {
+    pub accounts: HashMap<AccountId, WorkingAccount>,
+    pub projects: HashMap<String, Option<u32>>,
+}
 
 #[derive(Clone)]
-pub struct Context {
+pub struct Supercontext {
+    cache_path: PathBuf,
     hc: Client,
     pub limiters: Arc<
         Mutex<HashMap<String, Arc<RateLimiter<NotKeyed, InMemoryState, QuantaClock, NoOpMiddleware>>>>,
     >,
-    pub config: Arc<Mutex<projectconfig::latest::Config>>,
+}
+
+impl Supercontext {
+    pub fn new(cache_path: PathBuf) -> Self {
+        Supercontext {
+            cache_path: cache_path,
+            hc: reqwest::Client::builder().user_agent(USER_AGENT).build().unwrap(),
+            limiters: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+pub trait LogErr<T> {
+    fn log(self, log: &Logger) -> Option<T>;
+}
+
+impl<T> LogErr<T> for std::result::Result<T, anyhow::Error> {
+    fn log(self, log: &Logger) -> Option<T> {
+        match self {
+            Ok(v) => Some(v),
+            Err(e) => {
+                warn!(log, "{:?}", e);
+                None
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Context {
+    pub supercontext: Supercontext,
+    pub config: Arc<Mutex<WorkingWeights>>,
 }
 
 impl Context {
-    pub fn new(config: Option<projectconfig::latest::Config>) -> Self {
+    pub fn new(supercontext: Supercontext) -> Self {
         Context {
-            hc: reqwest::Client::builder().user_agent("https://github.com/andrewbaxter/bread-scan").build().unwrap(),
-            config: Arc::new(Mutex::new(config.unwrap_or_else(|| projectconfig::latest::Config {
-                disabled: false,
-                weights: projectconfig::v1::Weights {
-                    accounts: Default::default(),
-                    projects: Default::default(),
-                },
-            }))),
-            limiters: Arc::new(Mutex::new(HashMap::new())),
+            supercontext: supercontext,
+            config: Arc::new(Mutex::new(WorkingWeights::default())),
         }
     }
 
@@ -74,6 +122,7 @@ impl Context {
         let url = url::Url::parse(url)?;
         let limiter =
             self
+                .supercontext
                 .limiters
                 .lock()
                 .unwrap()
@@ -83,26 +132,45 @@ impl Context {
                 )
                 .clone();
         limiter.until_ready_with_jitter(Jitter::up_to(Duration::from_millis(500))).await;
-        Ok(self.hc.get(url))
+        Ok(self.supercontext.hc.get(url))
     }
 
-    pub async fn add_url_canonicalize(&self, log: &Logger, url: &str) {
+    pub async fn get_html(&self, url: &str) -> Result<String> {
+        let text =
+            self
+                .get(url)
+                .await?
+                .header(
+                    header::ACCEPT,
+                    HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+                )
+                .send()
+                .await?
+                .text()
+                .await?;
+        Ok(text)
+    }
+
+    pub async fn cache_get(&self, log: &Logger, key: &str) -> Option<String> {
+        match cacache::read(&self.supercontext.cache_path, key).await {
+            Err(cacache::Error::EntryNotFound(_, _)) => {
+                return None;
+            },
+            v => v,
+        }
+            .context("Error reading cache")
+            .log(log)
+            .and_then(|r| String::from_utf8(r).context("Corrupt cache, value not utf8").log(log))
+    }
+
+    pub async fn cache_put(&self, log: &Logger, key: &str, value: &str) {
+        cacache::write(&self.supercontext.cache_path, key, value).await.context("Error caching url").log(log);
+    }
+
+    pub async fn add_url_canonicalize(&self, log: &Logger, raw_url: &str) {
         async fn canonicalize(log: &Logger, ctx: &Context, raw_url: &str) -> String {
             match aes!({
-                let text =
-                    ctx
-                        .get(raw_url)
-                        .await?
-                        .header(
-                            header::ACCEPT,
-                            HeaderValue::from_static(
-                                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                            ),
-                        )
-                        .send()
-                        .await?
-                        .text()
-                        .await?;
+                let text = ctx.get_html(raw_url).await?;
                 let page = scraper::Html::parse_document(&text);
                 let link = match page.select(&scraper::Selector::parse("link[rel=\"canonical\"]").unwrap()).next() {
                     None => return Ok(None),
@@ -117,9 +185,9 @@ impl Context {
                 Err(e) => {
                     trace!(
                         log,
-                        "Error extracting canonical url from page",
-                        err = e.to_string(),
-                        url = raw_url.to_string()
+                        "Error extracting canonical url from page";
+                        "err" => e.to_string(),
+                        "url" => raw_url.to_string()
                     );
                 },
             }
@@ -127,9 +195,9 @@ impl Context {
                 Err(e) => {
                     trace!(
                         log,
-                        "Error parsing url during canonicalization",
-                        err = e.to_string(),
-                        url = raw_url.to_string()
+                        "Error parsing url during canonicalization";
+                        "err" => e.to_string(),
+                        "url" => raw_url.to_string()
                     );
                     return raw_url.to_string()
                 },
@@ -144,35 +212,61 @@ impl Context {
             )
         }
 
-        let url = canonicalize(log, self, url).await;
-        self.config.lock().unwrap().weights.projects.insert(url, DEFAULT_WEIGHT);
-    }
-}
-
-pub async fn process_bread(ctx: &Context, path: &Path) {
-    match aes!({
-        let config: VersionedProjectConfig = serde_yaml::from_slice(&match maybe_read(&path.join(FILENAME)) {
-            Err(e) => {
-                return Err(e.into());
-            },
-            Ok(None) => {
-                return Ok(());
-            },
-            Ok(Some(b)) => b,
-        })?;
-        match config {
-            VersionedProjectConfig::V1(config) => {
-                let mut write = ctx.config.lock().unwrap();
-                write.weights.accounts.extend(config.weights.accounts);
-                write.weights.projects.extend(config.weights.projects);
+        let cache_key = format!("canonical-{}", raw_url);
+        let url = match self.cache_get(log, &cache_key).await {
+            Some(v) => v,
+            None => {
+                let url = canonicalize(log, self, raw_url).await;
+                self.cache_put(log, &cache_key, &url).await;
+                url
             },
         };
-        Ok(())
-    }).await {
-        Ok(_) => { },
-        Err(e) => {
-            eprintln!("Error processing submodule at [[{}]]: {}", path.to_string_lossy(), e);
-        },
+        self.config.lock().unwrap().projects.insert(url, None);
+    }
+
+    pub async fn maybe_add_url(&self, log: &Logger, url: &str) -> bool {
+        match aes!({
+            let url = Url::parse(url)?;
+            let host = url.host_str().ok_or_else(|| anyhow!("URL missing host"))?;
+            if host.ends_with(".github.io") {
+                let org = host.split(".").next().unwrap();
+                self.add_url_canonicalize(&log, &format!("https://github.com/{}{}", org, url.path())).await;
+                return Ok(true);
+            }
+            if ["github.com", "gitlab.com", "sr.ht"].into_iter().any(|d| host.ends_with(d)) ||
+                host.split(".").any(|s| s == "gitlab") {
+                let mut path: Vec<String> = url.path().split('/').map(|s| s.to_string()).collect();
+                let mut matched = false;
+                if host == "github.com" {
+                    path.truncate(3);
+                    matched = true;
+                }
+                if host == "gitlab.com" {
+                    path.truncate(3);
+                    matched = true;
+                }
+                if host == "sr.ht" {
+                    path.truncate(3);
+                    matched = true;
+                }
+                if matched {
+                    self.add_url_canonicalize(log, &format!("https://{}{}", host, path.join("/"))).await;
+                }
+                return Ok(true);
+            }
+            Ok(false)
+        }).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(
+                    log,
+                    "Error parsing url";
+                    "url" => url.to_string(),
+                    "err" => #? e,
+                );
+                false
+            },
+        }
     }
 }
 
@@ -188,27 +282,4 @@ pub fn maybe_read(p: &Path) -> Result<Option<Vec<u8>>> {
         },
         Ok(r) => return Ok(Some(r)),
     }
-}
-
-pub fn norm_repo(repo: &str) -> Result<Option<String>> {
-    let url = url::Url::parse(repo)?;
-    let host = url.host_str().ok_or(anyhow!("Missing host portion of url"))?.to_string();
-    let mut path: Vec<String> = url.path().split('/').map(|s| s.to_string()).collect();
-    let mut matched = false;
-    if host.starts_with("github.com") {
-        path.truncate(3);
-        matched = true;
-    }
-    if host.starts_with("gitlab.com") {
-        path.truncate(3);
-        matched = true;
-    }
-    if host.starts_with("sr.ht") {
-        path.truncate(3);
-        matched = true;
-    }
-    if !matched {
-        return Ok(None);
-    }
-    Ok(Some(format!("https://{}{}", host, path.join("/"))))
 }

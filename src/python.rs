@@ -7,18 +7,19 @@ use reqwest::header::{
     HeaderValue,
 };
 use serde::Deserialize;
-use slog::Logger;
+use slog::{
+    Logger,
+    warn,
+    o,
+};
 use tokio::{
     task::JoinHandle,
     spawn,
 };
 use crate::{
-    warn,
-    o,
     common::{
         Context,
         maybe_read,
-        norm_repo,
     },
     aes,
     bbl,
@@ -28,10 +29,16 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep:
     if dep == "python" {
         return;
     }
-    let log = log.new(o!(dep = dep.to_string()));
+    let log = log.new(o!("dep" => dep.to_string()));
     let ctx = ctx.clone();
     pool.push(spawn(async move {
         match aes!({
+            let cache_key = format!("python-{}", dep);
+            if let Some(url) = ctx.cache_get(&log, &cache_key).await {
+                ctx.add_url_canonicalize(&log, &url).await;
+                return Ok(());
+            }
+
             #[derive(Deserialize)]
             pub struct Project {
                 pub info: Option<Info>,
@@ -53,31 +60,14 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep:
                     .json()
                     .await?;
             bbl!('search, {
-                async fn grab_repo(log: &Logger, ctx: &Context, raw_url: &str) -> bool {
-                    match aes!({
-                        let url = match norm_repo(raw_url)? {
-                            Some(u) => u,
-                            None => return Ok(false),
-                        };
-                        ctx.add_url_canonicalize(log, &url).await;
-                        Ok(true)
-                    }).await {
-                        Err(e) => {
-                            warn!(log, "Error parsing dep project url", url = raw_url, err = e.to_string());
-                            false
-                        },
-                        Ok(o) => {
-                            o
-                        },
-                    }
-                }
-
                 if let Some(info) = resp.info {
-                    if grab_repo(&log, &ctx, &info.project_url).await {
+                    if ctx.maybe_add_url(&log, &info.project_url).await {
+                        ctx.cache_put(&log, &cache_key, &info.project_url).await;
                         break 'search;
                     }
                     for url in info.project_urls.values() {
-                        if grab_repo(&log, &ctx, url).await {
+                        if ctx.maybe_add_url(&log, url).await {
+                            ctx.cache_put(&log, &cache_key, &url).await;
                             break 'search;
                         }
                     }
@@ -88,7 +78,11 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep:
         }).await {
             Ok(_) => { },
             Err(e) => {
-                warn!(log, "Error processing dependency", err = format!("{:?}", e));
+                warn!(
+                    log,
+                    "Error processing dependency";
+                    "err" => #? e
+                );
             },
         }
     }));
@@ -96,7 +90,7 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep:
 
 pub fn process_python_pyproject(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, path: &Path) {
     let project_path = path.join("pyproject.toml");
-    let log = log.new(o!(file = project_path.to_string_lossy().to_string()));
+    let log = log.new(o!("file" => project_path.to_string_lossy().to_string()));
 
     #[derive(Deserialize)]
     struct Poetry {
@@ -121,13 +115,21 @@ pub fn process_python_pyproject(log: &Logger, ctx: &Context, pool: &mut Vec<Join
             return;
         },
         Err(e) => {
-            warn!(log, "Error loading dep file", err = e.to_string());
+            warn!(
+                log,
+                "Error loading dep file";
+                "err" => #? e
+            );
             return;
         },
         Ok(Some(r)) => r,
     }) {
         Err(e) => {
-            warn!(log, "Error loading dep file", err = e.to_string());
+            warn!(
+                log,
+                "Error loading dep file";
+                "err" => #? e
+            );
             return;
         },
         Ok(b) => b,

@@ -14,15 +14,21 @@ reqwest = { version = "0.11.13", features = ["json"] }
 serde_json = "1.0.89"
 serde_yaml = "0.9.14"
 serde = { version = "1.0.148", features = ["derive"] }
-tokio = { version = "1.22.0", features = ["rt", "macros"] }
+tokio = { version = "1.22.0", features = ["rt", "macros", "process"] }
 anyhow = "1.0.66"
 structre = "0.0.1"
 slog = "2.7.0"
 sloggers = "2.1.1"
-bread-common = "0.0.2"
+bread-common = "0.0.3"
 url = "2.3.1"
 toml = "0.5.11"
 sxd-document = "0.3.2"
 sxd-xpath = "0.4.2"
 governor = "0.5.1"
 scraper = "0.14.0"
+tempfile = "3.4.0"
+cacache = { version = "11.2.0", features = [
+    "tokio-runtime",
+], default-features = false }
+path-absolutize = "3.0.14"
+platform-dirs = "0.3.0"

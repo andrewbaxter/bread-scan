@@ -7,7 +7,10 @@ use reqwest::header::{
     HeaderValue,
 };
 use serde::Deserialize;
-use slog::Logger;
+use slog::{
+    Logger,
+    warn,
+};
 use tokio::{
     spawn,
     task::JoinHandle,
@@ -16,23 +19,18 @@ use std::{
     io::ErrorKind,
     path::{
         Path,
-        PathBuf,
     },
-    str::FromStr,
 };
 use crate::{
     aes,
     common::{
-        process_bread,
         Context,
-        DEFAULT_WEIGHT,
     },
     o,
-    warn,
 };
 
 fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: String, dep: &Dependency) {
-    let log = log.new(o!(dependency = id.clone()));
+    let log = log.new(o!("dependency" => id.clone()));
     let ctx = ctx.clone();
     let dep = dep.clone();
     pool.push(spawn(async move {
@@ -42,11 +40,10 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: 
                 Dependency::Detailed(d) => {
                     let mut id = id.clone();
                     if let Some(git) = &d.git {
-                        ctx.config.lock().unwrap().weights.projects.insert(git.to_string(), DEFAULT_WEIGHT);
+                        ctx.config.lock().unwrap().projects.insert(git.to_string(), None);
                         return Ok(());
                     }
-                    if let Some(path) = &d.path {
-                        process_bread(&ctx, &PathBuf::from_str(&path)?).await;
+                    if d.path.is_some() {
                         return Ok(());
                     }
                     if let Some(pkg) = &d.package {
@@ -55,6 +52,11 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: 
                     id
                 },
             };
+            let cache_key = format!("rust-{}", id);
+            if let Some(repo) = ctx.cache_get(&log, &cache_key).await {
+                ctx.add_url_canonicalize(&log, &repo).await;
+                return Ok(());
+            }
 
             #[derive(Deserialize)]
             struct CratesRespCrate {
@@ -78,12 +80,17 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: 
                     .await?;
             if let Some(repo) = resp.crate_.repository {
                 ctx.add_url_canonicalize(&log, &repo).await;
+                ctx.cache_put(&log, &cache_key, &repo).await;
             }
             Ok(())
         }).await {
             Ok(_) => { },
             Err(e) => {
-                warn!(log, "Error processing dependency", err = format!("{:?}", e));
+                warn!(
+                    log,
+                    "Error processing dependency";
+                    "err" => #? e
+                );
             },
         }
     }));
@@ -91,14 +98,18 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: 
 
 pub fn process_rust_cargo(base_log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, base_path: &Path) {
     let path = base_path.join("Cargo.toml");
-    let log = base_log.new(o!(file = path.to_string_lossy().to_string()));
+    let log = base_log.new(o!("file" => path.to_string_lossy().to_string()));
     let m = match Manifest::from_path(&path) {
         Ok(m) => m,
         Err(cargo_manifest::Error::Io(e)) if e.kind() == ErrorKind::NotFound => {
             return;
         },
         Err(e) => {
-            warn!(log, "Error loading manifest", err = e.to_string());
+            warn!(
+                log,
+                "Error loading manifest";
+                "err" => #? e
+            );
             return;
         },
     };
