@@ -43,6 +43,10 @@ Commit and push this file and your project is ready to accept (and redistribute)
 
 # Other notes
 
+## Source and dest types
+
+The `file=` source/dest arguments can be used for storing results locally for manual editing, local management, etc. It is in a JSON format only used by `bread-scan`.
+
 ## Debug
 
 Run with `DEBUG=1` for more log messages.
