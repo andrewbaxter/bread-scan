@@ -1,8 +1,8 @@
 [package]
 name = "bread-scan"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
-description = "Scan dependencies to generate a .bread.yml file"
+description = "Find things to donate to on <https://bre.ad>"
 readme = "readme.md"
 repository = "https://github.com/andrewbaxter/bread-scan"
 license = "ISC"
