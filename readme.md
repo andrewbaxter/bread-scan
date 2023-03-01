@@ -1,4 +1,4 @@
-This is a command line tool for scanning dependencies for Bread donations. You can use it to update personal donations or to generate a [Bread](https://bre.ad) `.bread.yml` file for a project.
+This is a command line tool for [Bread](https://bre.ad) for finding relevant projects. You can use it to update personal donations or to generate a `.bread.yml` file for a project.
 
 Supported dependency files:
 
@@ -15,7 +15,11 @@ Supported operating systems for scanning:
 
 # Installation
 
-`cargo install bread-scan`
+`bread-scan` is written in Rust, and you can install `bread-scan` using the Rust package manager <https://doc.rust-lang.org/cargo/>:
+
+```
+cargo install bread-scan
+```
 
 # Usage
 
@@ -23,7 +27,9 @@ Supported operating systems for scanning:
 
 You'll need to set up a token at <https://bre.ad/tokens> with config read and write permission, and put it in an environment variable named `BREAD_TOKEN`.
 
-Run: `bread-scan -s os=debian -d donate`
+```
+bread-scan -s os=debian -d donate
+```
 
 This scans your system for manually installed packages and tries to figure out the corresponding repository, then updates your donation configuration with them.
 
@@ -33,7 +39,9 @@ The results will be merged with your existing donation targets, keeping existing
 
 If you're generating a yaml file for your project, you can use the following invocation.
 
-Run: `bread-scan -s project=. -d project_yaml=.`
+```
+bread-scan -s project=. -d project_yaml=.
+```
 
 `bread-scan` will look for dependencies in the project at the current directory using common dependency management systems (`npm`, `cargo`, etc).
 
