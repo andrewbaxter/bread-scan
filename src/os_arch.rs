@@ -5,6 +5,7 @@ use slog::{
     Logger,
     warn,
     o,
+    debug,
 };
 use structre::structre;
 use tokio::{
@@ -17,6 +18,7 @@ use crate::{
         Supercontext,
         Context,
     },
+    aes,
 };
 
 #[structre(r#"(?P<key>[^:\s]+)\s+: (?P<value>.+)"#)]
@@ -61,31 +63,35 @@ pub async fn process(log: Logger, supercontext: Supercontext) -> Result<WorkingW
                     let hrefs: Vec<String> = match ctx.cache_get(&log, &cache_key).await {
                         Some(v) => v,
                         None => {
-                            let text = match ctx.http_get_html(&url).await {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    warn!(
-                                        log,
-                                        "Error fetching project page in search for git URL";
-                                        "err" => #? e
-                                    );
-                                    return;
-                                },
-                            };
                             let mut hrefs = vec![];
-                            {
-                                let page = scraper::Html::parse_document(&text);
-                                for link in page.select(&scraper::Selector::parse("a").unwrap()) {
-                                    let href = match link.value().attr("href") {
-                                        None => continue,
-                                        Some(h) => h,
-                                    };
-                                    if !href.starts_with("https://") {
-                                        continue;
+                            aes!({
+                                let text = match ctx.http_get_html(&url).await {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        debug!(
+                                            log,
+                                            "Error fetching project page in search for git URL";
+                                            "err" => #? e
+                                        );
+                                        return Ok(());
+                                    },
+                                };
+                                {
+                                    let page = scraper::Html::parse_document(&text);
+                                    for link in page.select(&scraper::Selector::parse("a").unwrap()) {
+                                        let href = match link.value().attr("href") {
+                                            None => continue,
+                                            Some(h) => h,
+                                        };
+                                        if !href.starts_with("https://") {
+                                            continue;
+                                        }
+                                        hrefs.push(href.to_string());
                                     }
-                                    hrefs.push(href.to_string());
                                 }
-                            }
+                                let r: Result<()> = Ok(());
+                                r
+                            }).await.unwrap();
                             ctx.cache_put(&log, &cache_key, &hrefs).await;
                             hrefs
                         },

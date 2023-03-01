@@ -7,6 +7,7 @@ use slog::{
     Logger,
     warn,
     o,
+    debug,
 };
 use tokio::{
     process::Command,
@@ -72,7 +73,11 @@ pub async fn process(log: Logger, supercontext: Supercontext) -> Result<WorkingW
                                     .output()
                                     .await?;
                             if !res.status.success() {
-                                warn!(log, "Unable to get source for package");
+                                debug!(
+                                    log,
+                                    "Unable to get source for package";
+                                    "output" => #? res
+                                );
                                 return Ok(None);
                             }
                             let copyright =

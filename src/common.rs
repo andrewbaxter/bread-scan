@@ -48,8 +48,8 @@ use serde::{
 };
 use slog::{
     Logger,
-    trace,
     warn,
+    debug,
 };
 use crate::{
     aes,
@@ -168,70 +168,20 @@ impl Context {
             .log(log);
     }
 
-    pub async fn add_url_canonicalize(&self, log: &Logger, raw_url: &str) {
-        async fn canonicalize(log: &Logger, ctx: &Context, raw_url: &str) -> String {
-            match aes!({
-                let text = ctx.http_get_html(raw_url).await?;
-                let page = scraper::Html::parse_document(&text);
-                let link = match page.select(&scraper::Selector::parse("link[rel=\"canonical\"]").unwrap()).next() {
-                    None => return Ok(None),
-                    Some(x) => x,
-                };
-                Ok(link.value().attr("href").map(|u| u.to_string()))
-            }).await {
-                Ok(Some(u)) => {
-                    return u
-                },
-                Ok(None) => { },
-                Err(e) => {
-                    trace!(
-                        log,
-                        "Error extracting canonical url from page";
-                        "err" => e.to_string(),
-                        "url" => raw_url.to_string()
-                    );
-                },
-            }
-            let url = match url::Url::parse(raw_url) {
-                Err(e) => {
-                    trace!(
-                        log,
-                        "Error parsing url during canonicalization";
-                        "err" => e.to_string(),
-                        "url" => raw_url.to_string()
-                    );
-                    return raw_url.to_string()
-                },
-                Ok(u) => u,
-            };
-            format!(
-                "{}://{}{}{}",
-                url.scheme(),
-                url.host_str().unwrap_or(""),
-                url.port().map(|p| format!(":{}", p)).unwrap_or_else(|| "".to_string()),
-                url.path()
-            )
-        }
-
-        let cache_key = format!("canonical-{}", raw_url);
-        let url = match self.cache_get(log, &cache_key).await {
-            Some(v) => v,
-            None => {
-                let url = canonicalize(log, self, raw_url).await;
-                self.cache_put(log, &cache_key, &url).await;
-                url
-            },
-        };
-        self.config.lock().unwrap().projects.insert(url, None);
+    pub async fn add_url(&self, raw_url: &str) {
+        self.config.lock().unwrap().projects.insert(raw_url.to_string(), None);
     }
 
     pub async fn maybe_add_url(&self, log: &Logger, url: &str) -> bool {
         match aes!({
+            if url.is_empty() {
+                return Ok(false);
+            }
             let url = Url::parse(url)?;
             let host = url.host_str().ok_or_else(|| anyhow!("URL missing host"))?;
             if host.ends_with(".github.io") {
                 let org = host.split(".").next().unwrap();
-                self.add_url_canonicalize(&log, &format!("https://github.com/{}{}", org, url.path())).await;
+                self.add_url(&format!("https://github.com/{}{}", org, url.path())).await;
                 return Ok(true);
             }
             if ["github.com", "gitlab.com", "sr.ht"].into_iter().any(|d| host.ends_with(d)) ||
@@ -251,7 +201,7 @@ impl Context {
                     matched = true;
                 }
                 if matched {
-                    self.add_url_canonicalize(log, &format!("https://{}{}", host, path.join("/"))).await;
+                    self.add_url(&format!("https://{}{}", host, path.join("/"))).await;
                 }
                 return Ok(true);
             }
@@ -259,7 +209,7 @@ impl Context {
         }).await {
             Ok(r) => r,
             Err(e) => {
-                warn!(
+                debug!(
                     log,
                     "Error parsing url";
                     "url" => url.to_string(),

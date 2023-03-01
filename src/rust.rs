@@ -82,7 +82,7 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: 
                 },
             };
             if let Some(repo) = repo {
-                ctx.add_url_canonicalize(&log, &repo).await;
+                ctx.add_url(&repo).await;
             }
             Ok(())
         }).await {

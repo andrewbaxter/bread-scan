@@ -95,7 +95,7 @@ fn process_dep(
             };
             if !repo.is_empty() {
                 if !ctx.maybe_add_url(&log, &repo).await {
-                    ctx.add_url_canonicalize(&log, &repo).await;
+                    ctx.add_url(&repo).await;
                 }
             }
             Ok(())

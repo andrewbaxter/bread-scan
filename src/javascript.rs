@@ -64,7 +64,7 @@ fn process_npm_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, 
             };
             let url = url::Url::parse(&repo.url).context("Unparsable repo url")?;
             let path = url.path().rsplitn(2, ".git").collect::<Vec<&str>>().last().unwrap().to_string();
-            ctx.add_url_canonicalize(&log, &format!("https://{}{}", url.host_str().unwrap_or(""), path)).await;
+            ctx.add_url(&format!("https://{}{}", url.host_str().unwrap_or(""), path)).await;
             Ok(())
         }).await {
             Ok(_) => { },

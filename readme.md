@@ -41,6 +41,12 @@ This will merge with an existing yaml file if it exists, preserving existing wei
 
 Commit and push this file and your project is ready to accept (and redistribute) donations!
 
-# Cache
+# Other notes
+
+## Debug
+
+Run with `DEBUG=1` for more log messages.
+
+## Cache
 
 Various lookups are cached to make updating configs faster. The configs are stored in your system's user cache `bread-scan` directory. On linux, with XDG paths, this would be `/home/USER/.cache/bread-scan`. You may delete the directory, remote resources will need to be re-queried on the next run.

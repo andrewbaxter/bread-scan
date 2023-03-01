@@ -217,7 +217,11 @@ async fn get_donate_weights(hc: &reqwest::Client) -> Result<accountconfig::v1::W
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let mut builder = TerminalLoggerBuilder::new();
-    builder.level(Severity::Debug);
+    builder.level(if env::var("DEBUG").unwrap_or("".to_string()) == "1" {
+        Severity::Debug
+    } else {
+        Severity::Info
+    });
     builder.destination(Destination::Stderr);
     let log = builder.build().unwrap();
     match aes!({
