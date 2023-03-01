@@ -22,7 +22,6 @@ use crate::{
         maybe_read,
     },
     aes,
-    bbl,
 };
 
 fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep: String) {
@@ -34,46 +33,46 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, dep:
     pool.push(spawn(async move {
         match aes!({
             let cache_key = format!("python-{}", dep);
-            if let Some(url) = ctx.cache_get(&log, &cache_key).await {
-                ctx.add_url_canonicalize(&log, &url).await;
-                return Ok(());
-            }
-
-            #[derive(Deserialize)]
-            pub struct Project {
-                pub info: Option<Info>,
-            }
-
-            #[derive(Deserialize)]
-            pub struct Info {
-                pub project_url: String,
-                pub project_urls: HashMap<String, String>,
-            }
-
-            let resp: Project =
-                ctx
-                    .get(&format!("https://pypi.org/pypi/{}/json", dep))
-                    .await?
-                    .header(header::ACCEPT, HeaderValue::from_static("application/json"))
-                    .send()
-                    .await?
-                    .json()
-                    .await?;
-            bbl!('search, {
-                if let Some(info) = resp.info {
-                    if ctx.maybe_add_url(&log, &info.project_url).await {
-                        ctx.cache_put(&log, &cache_key, &info.project_url).await;
-                        break 'search;
+            let candidates = match ctx.cache_get::<Vec<String>>(&log, &cache_key).await {
+                Some(c) => c,
+                None => {
+                    #[derive(Deserialize)]
+                    pub struct Project {
+                        pub info: Option<Info>,
                     }
-                    for url in info.project_urls.values() {
-                        if ctx.maybe_add_url(&log, url).await {
-                            ctx.cache_put(&log, &cache_key, &url).await;
-                            break 'search;
+
+                    #[derive(Deserialize)]
+                    pub struct Info {
+                        pub project_url: String,
+                        pub project_urls: HashMap<String, String>,
+                    }
+
+                    let resp: Project =
+                        ctx
+                            .http_get(&format!("https://pypi.org/pypi/{}/json", dep))
+                            .await?
+                            .header(header::ACCEPT, HeaderValue::from_static("application/json"))
+                            .send()
+                            .await?
+                            .json()
+                            .await?;
+                    let mut candidates = vec![];
+                    if let Some(info) = resp.info {
+                        candidates.push(info.project_url);
+                        for url in info.project_urls.values() {
+                            candidates.push(url.clone());
                         }
                     }
+                    ctx.cache_put(&log, &cache_key, &candidates).await;
+                    candidates
+                },
+            };
+            for c in candidates {
+                if ctx.maybe_add_url(&log, &c).await {
+                    return Ok(());
                 }
-                warn!(log, "No repo-ish url found in dep metadata");
-            });
+            }
+            warn!(log, "No repo-ish url found in dep metadata");
             Ok(())
         }).await {
             Ok(_) => { },

@@ -36,66 +36,76 @@ pub async fn process(log: Logger, supercontext: Supercontext) -> Result<WorkingW
         sub_pool.push(spawn(async move {
             match aes!({
                 let cache_key = format!("debian-{}", package);
-                if let Some(source) = ctx.cache_get(&log, &cache_key).await {
-                    ctx.maybe_add_url(&log, &source).await;
-                    return Ok(());
-                }
-                let pkg_info = Command::new("dpkg").arg("-s").arg(&package).output().await?;
-                if !pkg_info.status.success() {
-                    warn!(
-                        log,
-                        "Getting package info failed";
-                        "output" => #? pkg_info
-                    );
-                    return Ok(());
-                }
-                let mut ver = None;
-                for line in String::from_utf8_lossy(&pkg_info.stdout).lines() {
-                    ver = Some(match line.strip_prefix("Version: ") {
-                        Some(v) => v.to_string(),
-                        None => return Ok(()),
-                    });
-                }
-                let ver = match ver {
-                    Some(v) => v,
+                let source: Option<String> = match ctx.cache_get::<Option<String>>(&log, &cache_key).await {
+                    Some(s) => s,
                     None => {
-                        warn!(log, "Unable to determine version for package");
-                        return Ok(());
+                        let source = aes!({
+                            let pkg_info = Command::new("dpkg").arg("-s").arg(&package).output().await?;
+                            if !pkg_info.status.success() {
+                                warn!(
+                                    log,
+                                    "Getting package info failed";
+                                    "output" => #? pkg_info
+                                );
+                                return Ok(None);
+                            }
+                            let mut ver = None;
+                            for line in String::from_utf8_lossy(&pkg_info.stdout).lines() {
+                                match line.strip_prefix("Version: ") {
+                                    Some(v) => ver = Some(v.to_string()),
+                                    None => continue,
+                                };
+                            }
+                            let ver = match ver {
+                                Some(v) => v,
+                                None => {
+                                    warn!(log, "Unable to determine version for package");
+                                    return Ok(None);
+                                },
+                            };
+                            let source_dir = tempfile::tempdir()?;
+                            let res =
+                                Command::new("apt-get")
+                                    .arg("source")
+                                    .arg(format!("{}={}", package, ver))
+                                    .current_dir(source_dir.path())
+                                    .output()
+                                    .await?;
+                            if !res.status.success() {
+                                warn!(log, "Unable to get source for package");
+                                return Ok(None);
+                            }
+                            let copyright =
+                                match maybe_read(
+                                    &fs::read_dir(source_dir.path())?
+                                        .next()
+                                        .ok_or_else(
+                                            || anyhow!(
+                                                "Did apt-get source for {} but no source directory created",
+                                                package
+                                            ),
+                                        )??
+                                        .path()
+                                        .join("debian/copyright"),
+                                )? {
+                                    Some(c) => c,
+                                    None => {
+                                        return Ok(None);
+                                    },
+                                };
+                            for line in String::from_utf8_lossy(&copyright).lines() {
+                                if let Some(source) = line.strip_prefix("Source: ") {
+                                    return Ok(Some(source.to_string()));
+                                }
+                            }
+                            return Ok(None);
+                        }).await?;
+                        ctx.cache_put(&log, &cache_key, &source).await;
+                        source
                     },
                 };
-                let source_dir = tempfile::tempdir()?;
-                let res =
-                    Command::new("apt-get")
-                        .arg("source")
-                        .arg(format!("{}={}", package, ver))
-                        .current_dir(source_dir.path())
-                        .output()
-                        .await?;
-                if !res.status.success() {
-                    warn!(log, "Unable to get source for package");
-                    return Ok(());
-                }
-                let copyright =
-                    match maybe_read(
-                        &fs::read_dir(source_dir.path())?
-                            .next()
-                            .ok_or_else(
-                                || anyhow!("Did apt-get source for {} but no source directory created", package),
-                            )??
-                            .path()
-                            .join("debian/copyright"),
-                    )? {
-                        Some(c) => c,
-                        None => {
-                            return Ok(());
-                        },
-                    };
-                for line in String::from_utf8_lossy(&copyright).lines() {
-                    if let Some(source) = line.strip_prefix("Source: ") {
-                        ctx.cache_put(&log, &cache_key, &source).await;
-                        ctx.maybe_add_url(&log, source).await;
-                        break;
-                    }
+                if let Some(source) = source {
+                    ctx.maybe_add_url(&log, &source).await;
                 }
                 Ok(())
             }).await {

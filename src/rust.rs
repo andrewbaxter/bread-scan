@@ -53,34 +53,36 @@ fn process_dep(log: &Logger, ctx: &Context, pool: &mut Vec<JoinHandle<()>>, id: 
                 },
             };
             let cache_key = format!("rust-{}", id);
-            if let Some(repo) = ctx.cache_get(&log, &cache_key).await {
+            let repo = match ctx.cache_get(&log, &cache_key).await {
+                Some(r) => r,
+                None => {
+                    #[derive(Deserialize)]
+                    struct CratesRespCrate {
+                        repository: Option<String>,
+                    }
+
+                    #[derive(Deserialize)]
+                    struct CratesResp {
+                        #[serde(rename = "crate")]
+                        crate_: CratesRespCrate,
+                    }
+
+                    let resp: CratesResp =
+                        ctx
+                            .http_get(&format!("https://crates.io/api/v1/crates/{}", id))
+                            .await?
+                            .header(header::ACCEPT, HeaderValue::from_static("application/json"))
+                            .send()
+                            .await?
+                            .json()
+                            .await?;
+                    let out = resp.crate_.repository;
+                    ctx.cache_put(&log, &cache_key, &out).await;
+                    out
+                },
+            };
+            if let Some(repo) = repo {
                 ctx.add_url_canonicalize(&log, &repo).await;
-                return Ok(());
-            }
-
-            #[derive(Deserialize)]
-            struct CratesRespCrate {
-                repository: Option<String>,
-            }
-
-            #[derive(Deserialize)]
-            struct CratesResp {
-                #[serde(rename = "crate")]
-                crate_: CratesRespCrate,
-            }
-
-            let resp: CratesResp =
-                ctx
-                    .get(&format!("https://crates.io/api/v1/crates/{}", id))
-                    .await?
-                    .header(header::ACCEPT, HeaderValue::from_static("application/json"))
-                    .send()
-                    .await?
-                    .json()
-                    .await?;
-            if let Some(repo) = resp.crate_.repository {
-                ctx.add_url_canonicalize(&log, &repo).await;
-                ctx.cache_put(&log, &cache_key, &repo).await;
             }
             Ok(())
         }).await {

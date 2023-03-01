@@ -17,7 +17,9 @@ Supported operating systems for scanning:
 
 `cargo install bread-scan`
 
-# Usage - donations
+# Usage
+
+## Donations
 
 You'll need to set up a token at <https://bre.ad/tokens> with config read and write permission, and put it in an environment variable named `BREAD_TOKEN`.
 
@@ -27,7 +29,7 @@ This scans your system for manually installed packages and tries to figure out t
 
 The results will be merged with your existing donation targets, keeping existing weights. If you want to remove software you're no longer using, use `--remove`.
 
-# Usage - project yaml
+## Project yaml
 
 If you're generating a yaml file for your project, you can use the following invocation.
 
@@ -38,3 +40,7 @@ Run: `bread-scan -s project=. -d project_yaml=.`
 This will merge with an existing yaml file if it exists, preserving existing weights. It will keep projects even if it didn't find them during a scan. You can use `--remove` to have it remove them (or similarly, `--remove-accounts` for accounts).
 
 Commit and push this file and your project is ready to accept (and redistribute) donations!
+
+# Cache
+
+Various lookups are cached to make updating configs faster. The configs are stored in your system's user cache `bread-scan` directory. On linux, with XDG paths, this would be `/home/USER/.cache/bread-scan`. You may delete the directory, remote resources will need to be re-queried on the next run.

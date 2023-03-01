@@ -44,6 +44,7 @@ use reqwest::{
 use serde::{
     Deserialize,
     Serialize,
+    de::DeserializeOwned,
 };
 use slog::{
     Logger,
@@ -118,7 +119,7 @@ impl Context {
         }
     }
 
-    pub async fn get(&self, url: &str) -> Result<RequestBuilder> {
+    pub async fn http_get(&self, url: &str) -> Result<RequestBuilder> {
         let url = url::Url::parse(url)?;
         let limiter =
             self
@@ -135,10 +136,10 @@ impl Context {
         Ok(self.supercontext.hc.get(url))
     }
 
-    pub async fn get_html(&self, url: &str) -> Result<String> {
+    pub async fn http_get_html(&self, url: &str) -> Result<String> {
         let text =
             self
-                .get(url)
+                .http_get(url)
                 .await?
                 .header(
                     header::ACCEPT,
@@ -151,26 +152,26 @@ impl Context {
         Ok(text)
     }
 
-    pub async fn cache_get(&self, log: &Logger, key: &str) -> Option<String> {
+    pub async fn cache_get<T: DeserializeOwned>(&self, log: &Logger, key: &str) -> Option<T> {
         match cacache::read(&self.supercontext.cache_path, key).await {
             Err(cacache::Error::EntryNotFound(_, _)) => {
                 return None;
             },
             v => v,
-        }
-            .context("Error reading cache")
-            .log(log)
-            .and_then(|r| String::from_utf8(r).context("Corrupt cache, value not utf8").log(log))
+        }.context("Error reading cache").log(log).and_then(|r| serde_json::from_slice(&r).ok())
     }
 
-    pub async fn cache_put(&self, log: &Logger, key: &str, value: &str) {
-        cacache::write(&self.supercontext.cache_path, key, value).await.context("Error caching url").log(log);
+    pub async fn cache_put<T: Serialize>(&self, log: &Logger, key: &str, value: &T) {
+        cacache::write(&self.supercontext.cache_path, key, &serde_json::to_string(&value).unwrap())
+            .await
+            .context("Error caching url")
+            .log(log);
     }
 
     pub async fn add_url_canonicalize(&self, log: &Logger, raw_url: &str) {
         async fn canonicalize(log: &Logger, ctx: &Context, raw_url: &str) -> String {
             match aes!({
-                let text = ctx.get_html(raw_url).await?;
+                let text = ctx.http_get_html(raw_url).await?;
                 let page = scraper::Html::parse_document(&text);
                 let link = match page.select(&scraper::Selector::parse("link[rel=\"canonical\"]").unwrap()).next() {
                     None => return Ok(None),

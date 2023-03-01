@@ -61,37 +61,39 @@ fn process_dep(
                     ver = dep_ver
                 );
             let cache_key = format!("java-{}", url);
-            if let Some(repo) = ctx.cache_get(&log, &cache_key).await {
-                if !ctx.maybe_add_url(&log, &repo).await {
-                    ctx.add_url_canonicalize(&log, &repo).await;
-                }
-                return Ok(());
-            }
+            let repo = match ctx.cache_get::<String>(&log, &cache_key).await {
+                Some(r) => r,
+                None => {
+                    fn work_around_rust_lifetime_bugs(resp_bytes: &[u8]) -> Result<String> {
+                        let xpath =
+                            sxd_xpath::Factory::new()
+                                .build("normalize-space(//n:scm/n:url/text())")
+                                .unwrap()
+                                .unwrap();
+                        let (pom, xctx) = load_pom(resp_bytes).context("Error parsing dependency pom.xml")?;
+                        Ok(xpath.evaluate(&xctx, pom.as_document().root()).unwrap().string())
+                    }
 
-            fn work_around_rust_lifetime_bugs(resp_bytes: &[u8]) -> Result<String> {
-                let xpath =
-                    sxd_xpath::Factory::new().build("normalize-space(//n:scm/n:url/text())").unwrap().unwrap();
-                let (pom, xctx) = load_pom(resp_bytes).context("Error parsing dependency pom.xml")?;
-                Ok(xpath.evaluate(&xctx, pom.as_document().root()).unwrap().string())
-            }
-
-            let resp = ctx.get(&url).await?.send().await?;
-            if resp.status() == StatusCode::NOT_FOUND {
-                return Ok(());
-            }
-            let body = resp.bytes().await?.to_vec();
-            let repo =
-                work_around_rust_lifetime_bugs(
-                    &body,
-                ).with_context(
-                    || format!(
-                        "Failed to extract pom from GET to {} with body:\n[[{}]]",
-                        url,
-                        String::from_utf8_lossy(&body)
-                    ),
-                )?;
+                    let resp = ctx.http_get(&url).await?.send().await?;
+                    if resp.status() == StatusCode::NOT_FOUND {
+                        return Ok(());
+                    }
+                    let body = resp.bytes().await?.to_vec();
+                    let repo =
+                        work_around_rust_lifetime_bugs(
+                            &body,
+                        ).with_context(
+                            || format!(
+                                "Failed to extract pom from GET to {} with body:\n[[{}]]",
+                                url,
+                                String::from_utf8_lossy(&body)
+                            ),
+                        )?;
+                    ctx.cache_put(&log, &cache_key, &repo).await;
+                    repo
+                },
+            };
             if !repo.is_empty() {
-                ctx.cache_put(&log, &cache_key, &repo).await;
                 if !ctx.maybe_add_url(&log, &repo).await {
                     ctx.add_url_canonicalize(&log, &repo).await;
                 }

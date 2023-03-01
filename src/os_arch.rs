@@ -58,38 +58,40 @@ pub async fn process(log: Logger, supercontext: Supercontext) -> Result<WorkingW
                 let ctx = ctx.clone();
                 sub_pool.push(spawn(async move {
                     let cache_key = format!("arch-html-{}", url);
-                    if let Some(href) = ctx.cache_get(&log, &cache_key).await {
-                        ctx.maybe_add_url(&log, &href).await;
-                        return;
-                    }
-                    let text = match ctx.get_html(&url).await {
-                        Ok(t) => t,
-                        Err(e) => {
-                            warn!(
-                                log,
-                                "Error fetching project page in search for git URL";
-                                "err" => #? e
-                            );
-                            return;
+                    let hrefs: Vec<String> = match ctx.cache_get(&log, &cache_key).await {
+                        Some(v) => v,
+                        None => {
+                            let text = match ctx.http_get_html(&url).await {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    warn!(
+                                        log,
+                                        "Error fetching project page in search for git URL";
+                                        "err" => #? e
+                                    );
+                                    return;
+                                },
+                            };
+                            let mut hrefs = vec![];
+                            {
+                                let page = scraper::Html::parse_document(&text);
+                                for link in page.select(&scraper::Selector::parse("a").unwrap()) {
+                                    let href = match link.value().attr("href") {
+                                        None => continue,
+                                        Some(h) => h,
+                                    };
+                                    if !href.starts_with("https://") {
+                                        continue;
+                                    }
+                                    hrefs.push(href.to_string());
+                                }
+                            }
+                            ctx.cache_put(&log, &cache_key, &hrefs).await;
+                            hrefs
                         },
                     };
-                    let mut hrefs = vec![];
-                    {
-                        let page = scraper::Html::parse_document(&text);
-                        for link in page.select(&scraper::Selector::parse("a").unwrap()) {
-                            let href = match link.value().attr("href") {
-                                None => continue,
-                                Some(h) => h,
-                            };
-                            if !href.starts_with("https://") {
-                                continue;
-                            }
-                            hrefs.push(href.to_string());
-                        }
-                    }
                     for href in hrefs {
                         if ctx.maybe_add_url(&log, &href).await {
-                            ctx.cache_put(&log, &cache_key, &href).await;
                             break;
                         };
                     }
